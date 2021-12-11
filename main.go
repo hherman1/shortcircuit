@@ -1,123 +1,16 @@
-package main
+package shortcircuit
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"net/http"
-	"os"
-	"strconv"
 	"strings"
 )
 
-//go:embed sample.html
-var sample string
-
-func main() {
-	if err := run(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-}
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
-
-func run() error {
-	http.Handle("/ws", http.HandlerFunc(handleWs))
-	return http.ListenAndServe(":8080", nil)
-}
-
-func handleWs(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println("upgrade", err)
-		return
-	}
-	go func() {
-		defer conn.Close()
-		err := client(conn)
-		if err != nil {
-			fmt.Println("talking to websocket:", err)
-			return
-		}
-	}()
-}
-
-// Manages an interaction with a new websocket client. Does not close the socket.
-func client(conn *websocket.Conn) error {
-
-	// assume we're starting with the sampe sample
-	hn, err := html.Parse(strings.NewReader(sample))
-	if err != nil {
-		return fmt.Errorf("parse sample html: %w", err)
-	}
-	var cl changelog
-	n := Node{
-		n:  hn,
-		cl: &cl,
-	}
-	counter := 0
-//	flicker, err := parse(`<div>
-//<h1> This flickering div comes from the backend!!! </h1>
-//<p> this too </p>
-//</div>`)
-//	if err != nil {
-//		return fmt.Errorf("parse flicker html: %w", err)
-//	}
-	for {
-		var event struct {Type string; Message string}
-		err := conn.ReadJSON(&event)
-		if err != nil {
-			return fmt.Errorf("read event: %w", err)
-		}
-		body := n.body()
-		cnode := body.byId("counter")
-		counter++
-		cnode.rm(0)
-		newCnode, err := parse(strconv.Itoa(counter))
-		if err != nil {
-			return fmt.Errorf("parse counter: %w", err)
-		}
-		cnode.insert(newCnode, 0)
-		// flush
-		err = conn.WriteJSON(cl.buffer)
-		if err != nil {
-			return fmt.Errorf("flush insert: %w", err)
-		}
-		cl.buffer = cl.buffer[:0]
-		//time.Sleep(1 * time.Second)
-		//body.rm(0)
-		//// flush again
-		//err = conn.WriteJSON(cl.buffer)
-		//if err != nil {
-		//	return fmt.Errorf("flush rm: %w", err)
-		//}
-		//cl.buffer = cl.buffer[:0]
-	}
-}
-
-func show(n *html.Node) {
-	var s bytes.Buffer
-	err := html.Render(&s, n)
-	if err != nil {
-		panic(fmt.Errorf("render path result: %w", err))
-	}
-	fmt.Println(s.String())
-}
-
 // Parses an html fragment into its node. Excludes <html>, <body>, and <head> tags.
-func parse(h string) (*html.Node, error) {
+func Parse(h string) (*html.Node, error) {
 	n, err := html.ParseFragment(strings.NewReader(h), nil)
 	if err != nil {
 		return nil, fmt.Errorf("parse fragment: %w", err)
@@ -128,18 +21,18 @@ func parse(h string) (*html.Node, error) {
 // An api for tracking changes to an html document.
 type Node struct {
 	// The backing node
-	n *html.Node
+	N *html.Node
 	// A log of changes
-	cl *changelog
+	Cl *Changelog
 }
 
-// If this is a document node, returns the body node within this document, otherwise returns self.
-func (n Node) body() Node {
-	if n.n.Type != html.DocumentNode {
+// If this is a document node, returns the Body node within this document, otherwise returns self.
+func (n Node) Body() Node {
+	if n.N.Type != html.DocumentNode {
 		return n
 	}
 	for _, maybe := range n.children()[0].children() {
-		if maybe.n.DataAtom == atom.Body {
+		if maybe.N.DataAtom == atom.Body {
 			return maybe
 		}
 	}
@@ -147,9 +40,9 @@ func (n Node) body() Node {
 }
 
 // Fetches the subnode with the given id, if it exists.
-func (n Node) byId(id string) *Node {
+func (n Node) ById(id string) *Node {
 	for _, sn := range n.children() {
-		for _, a := range sn.n.Attr {
+		for _, a := range sn.N.Attr {
 			if a.Key == "id" && a.Val == id {
 				return &sn
 			}
@@ -161,10 +54,10 @@ func (n Node) byId(id string) *Node {
 // All the child nodes of this node
 func (n Node) children() []Node {
 	var c []Node
-	for next := n.n.FirstChild; next != nil; next = next.NextSibling {
+	for next := n.N.FirstChild; next != nil; next = next.NextSibling {
 		c = append(c, Node{
-			n:  next,
-			cl: n.cl,
+			N:  next,
+			Cl: n.Cl,
 		})
 	}
 	return c
@@ -176,9 +69,9 @@ func (n *Node) setattr(k, v string) {
 		Key: k,
 		Val: v,
 	}
-	c.Apply(n.n)
-	n.cl.buffer = append(n.cl.buffer, Change{
-		IPath:   path(n.n),
+	c.Apply(n.N)
+	n.Cl.Buffer = append(n.Cl.Buffer, Change{
+		IPath:   path(n.N),
 		Setattr: &c,
 	})
 }
@@ -186,32 +79,32 @@ func (n *Node) setattr(k, v string) {
 // Removes the given attribute from the node
 func (n *Node) rmattr(k string) {
 	c := rmattr(k)
-	c.Apply(n.n)
-	n.cl.buffer = append(n.cl.buffer, Change{
-		IPath:  path(n.n),
+	c.Apply(n.N)
+	n.Cl.Buffer = append(n.Cl.Buffer, Change{
+		IPath:  path(n.N),
 		Rmattr: &c,
 	})
 }
 
 // Inserts the given node at the given index. E.g i <= 0 is a prepend, and i >= len(children) is an append.
-func (n *Node) insert(o *html.Node, i int) {
+func (n *Node) Insert(o *html.Node, i int) {
 	c := insertNode{
 		i: i,
 		n: o,
 	}
-	c.Apply(n.n)
-	n.cl.buffer = append(n.cl.buffer, Change{
-		IPath:      path(n.n),
+	c.Apply(n.N)
+	n.Cl.Buffer = append(n.Cl.Buffer, Change{
+		IPath:      path(n.N),
 		InsertNode: &c,
 	})
 }
 
 // Removes the child at the given node.
-func (n *Node) rm(i int) {
+func (n *Node) Rm(i int) {
 	c := rmnode(i)
-	c.Apply(n.n)
-	n.cl.buffer = append(n.cl.buffer, Change{
-		IPath:      path(n.n),
+	c.Apply(n.N)
+	n.Cl.Buffer = append(n.Cl.Buffer, Change{
+		IPath:      path(n.N),
 		Rmnode: &c,
 	})
 }
@@ -235,9 +128,9 @@ func path(n *html.Node) ipath {
 }
 
 
-type changelog struct {
+type Changelog struct {
 	// Changes that have been applied to the local tree but have not been flushed to a remote buffer yet.
-	buffer []Change
+	Buffer []Change
 }
 
 
@@ -344,7 +237,7 @@ func (ins *insertNode) UnmarshalJSON(i []byte) error {
 	if err != nil {
 		return fmt.Errorf("parse insert node json: %w", err)
 	}
-	n, err := parse(j.Html)
+	n, err := Parse(j.Html)
 	if err != nil {
 		return fmt.Errorf("parse insert node html: %w", err)
 	}
