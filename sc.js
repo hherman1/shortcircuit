@@ -24,6 +24,7 @@ window.onload = function () {
                 if (change.InsertNode != null) {
                     if (p.childNodes.length == 0) {
                         p.innerHTML = change.InsertNode.Html;
+                        registerListeners(p)
                         continue;
                     }
                     let container = document.createElement("div")
@@ -32,10 +33,12 @@ window.onload = function () {
                     // parse node
                     if (change.InsertNode.Index >= p.childNodes.length) {
                         p.appendChild(parsed)
+                        registerListeners(p)
                         continue;
                     }
                     let child = p.childNodes[change.InsertNode.Index];
                     p.insertBefore(parsed, child)
+                    registerListeners(p)
                     continue;
                 } else if (change.Rmnode != null) {
                     p.childNodes[change.Rmnode].remove()

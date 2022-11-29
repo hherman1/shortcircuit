@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+// The type shortcircuit will send back over the websocket on events.
+type Event struct {
+	// A click? Form submission?...
+	Type    string
+	// The associated data. Determined by the developer.
+	Message string
+}
+
 // Parses an html fragment into its node. Excludes <html>, <body>, and <head> tags.
 func Parse(h string) (*html.Node, error) {
 	n, err := html.ParseFragment(strings.NewReader(h), nil)
@@ -47,6 +55,9 @@ func (n Node) ById(id string) *Node {
 				return &sn
 			}
 		}
+		if found := sn.ById(id); found != nil {
+			return found
+		}
 	}
 	return nil
 }
@@ -61,6 +72,23 @@ func (n Node) children() []Node {
 		})
 	}
 	return c
+}
+
+// Removes all the children of this node.
+func (n *Node) Clear() {
+	var rms []rmnode
+	for next := n.N.FirstChild; next != nil; next = next.NextSibling {
+		rms = append(rms, rmnode(0))
+	}
+	p := path(n.N)
+	for _, rm := range rms {
+		rm.Apply(n.N)
+		lrm := rm
+		n.Cl.Buffer = append(n.Cl.Buffer, Change{
+			IPath:  p,
+			Rmnode: &lrm,
+		})
+	}
 }
 
 // Sets the given attribute to the given value.
